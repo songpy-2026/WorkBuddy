@@ -1,0 +1,41 @@
+name: Buddy 加油站 · 每日签到与派猫猫
+
+on:
+  # 每天北京时间 09:01（UTC 01:01）定时执行一次
+  schedule:
+    - cron: '1 1 * * *'
+  # 允许在 Actions 页面手动触发，便于验收跑一次
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  buddy-station:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 解析 Python 解释器路径（不硬编码版本号）
+        id: py
+        shell: bash
+        run: |
+          # 动态获取解释器，避免硬编码 python3.x 版本号
+          PY="$(command -v python3 || command -v python)"
+          if [ -z "$PY" ]; then
+            echo "未找到 Python 解释器" >&2
+            exit 1
+          fi
+          echo "interpreter=$PY" >> "$GITHUB_OUTPUT"
+          "$PY" --version
+
+      - name: 运行签到与派猫猫（结果推送企业微信）
+        env:
+          # 云端只读 Secret，不读取任何本地登录态
+          WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          WECOM_SECRET: ${{ secrets.WECOM_SECRET }}
+        run: |
+          "${{ steps.py.outputs.interpreter }}" scripts/buddy_station_ci.py

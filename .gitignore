@@ -1,0 +1,9 @@
+# 本地产物 / 敏感文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+*.secret
+*.local
+.DS_Store
