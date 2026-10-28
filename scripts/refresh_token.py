@@ -76,6 +76,10 @@ def _plain_refresh_token():
 def _load_via_skill():
     """优先复用已安装技能中已验证的解密能力（支持 5.6.2+ 信封）。"""
     home = os.path.expanduser("~")
+    # 兜底补全 Windows 标准环境变量，避免 _auth_candidates() 因 LOCALAPPDATA 缺失
+    # 而漏掉 AppData\Local 下的真实登录态文件（导致 0 候选）。
+    os.environ.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    os.environ.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
     candidates = [
         os.path.join(home, ".workbuddy", "skills", "totorosir-workbuddy-score", "scripts"),
         os.path.join(home, ".workbuddy", "skills", "totorosir-workbuddy-score__skillhub", "scripts"),
