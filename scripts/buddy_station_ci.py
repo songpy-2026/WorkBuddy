@@ -3,12 +3,11 @@
 """
 Buddy 加油站 · GitHub Actions 云端执行脚本（纯标准库，无第三方依赖）
 
-职责（单次运行内顺序完成）：
+职责（单次运行内顺序完成，结果仅打印到日志，不对外通知）：
   1. 用仓库 Secret 中的长效 refresh token，向官方刷新接口换取短效 access token；
   2. 查询今日签到状态并执行自动签到（幂等，已签则跳过）；
   3. 派猫猫旅行全自动闭环：先领取已到家的旅行积分，再判断是否可派新一趟
-     （idle 且未达每日上限才派，当天已派过则跳过）；
-  4. 将「签到结果」与「猫猫状态」分开展示，推送至企业微信群机器人 webhook。
+     （idle 且未达每日上限才派，当天已派过则跳过）。
 
 安全约定：
   - 云端不读取任何本地登录态，凭证仅来自环境变量（GitHub Secret）；
@@ -16,9 +15,6 @@ Buddy 加油站 · GitHub Actions 云端执行脚本（纯标准库，无第三�
   - 仅调用三个已验证写接口：daily-checkin、travel/claim、travel/depart。
 """
 
-import base64
-import hashlib
-import hmac
 import json
 import os
 import random
@@ -314,106 +310,22 @@ def travel_pipeline(token, location_id=None):
     return out
 
 
-def fmt_duration(seconds):
-    if seconds is None:
-        return None
-    seconds = int(seconds)
-    hours, rem = divmod(seconds, 3600)
-    minutes = rem // 60
-    if hours > 0:
-        return "%d 小时 %d 分" % (hours, minutes)
-    if minutes > 0:
-        return "%d 分钟" % minutes
-    return "%d 秒" % seconds
-
-
 def build_travel_section(travel):
     """组装猫猫部分展示文案（含最终状态）。"""
     if travel.get("skipped"):
-        return ("**🐱 猫猫旅行**\n- 状态：<font color=\"comment\">跳过</font>\n- %s"
-                % travel["lines"][0])
+        return "【🐱 猫猫旅行】状态：跳过；%s" % travel["lines"][0]
     lines = list(travel.get("lines", []))
     final_state = travel.get("final_state")
     if final_state:
         lines.append("当前猫猫状态：%s" % TRAVEL_STATE_TEXT.get(final_state, final_state))
-    body = "\n".join("- %s" % x for x in lines) if lines else "- 无操作"
-    return "**🐱 猫猫旅行**\n%s" % body
-
-
-# ---------------------------------------------------------------------------
-# 企业微信推送
-# ---------------------------------------------------------------------------
-def sign_wecom(webhook, secret):
-    if not secret:
-        return webhook
-    timestamp = str(int(time.time()))
-    string_to_sign = "%s\n%s" % (timestamp, secret)
-    hmac_code = hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"),
-                         digestmod=hashlib.sha256).digest()
-    sign = base64.b64encode(hmac_code).decode("utf-8")
-    sep = "&" if "?" in webhook else "?"
-    return "%s%ssign=%s&timestamp=%s" % (webhook, sep, sign, timestamp)
-
-
-def push_wecom(webhook, secret, title, content):
-    if not webhook:
-        print("[wecom] 未配置 WECOM_WEBHOOK，跳过推送（不影响整体结论）")
-        return False
-    url = sign_wecom(webhook, secret)
-    payload = {"msgtype": "markdown", "content": {"content": content}}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            code = resp.getcode()
-            body = resp.read().decode("utf-8", "replace")
-        log_raw("wecom-push", code, safe_parse(body))
-        return 200 <= code < 300
-    except Exception as e:
-        print("[wecom] 推送失败: %s" % str(e)[:160])
-        return False
-
-
-def safe_parse(text):
-    try:
-        return json.loads(text)
-    except Exception:
-        return {"raw": text[:200]}
+    return "【🐱 猫猫旅行】%s" % ("；".join(lines) if lines else "无操作")
 
 
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def build_message(checkin, travel):
-    now = time.strftime("%Y-%m-%d %H:%M", time.localtime())
-
-    if checkin["status"] == "ok":
-        if checkin["action"] == "skip_already_signed":
-            ck_state = "已签到（跳过）"
-        else:
-            ck_state = "成功"
-        ck_line = "- 状态：<font color=\"info\">%s</font>\n- 说明：%s\n- 当前积分余额：%s" % (
-            ck_state, checkin["msg"], checkin["balance"])
-    else:
-        ck_line = "- 状态：<font color=\"warning\">失败</font>\n- 说明：%s" % checkin["msg"]
-
-    travel_section = build_travel_section(travel)
-
-    content = (
-        "# 🐾 Buddy 加油站 · 每日播报\n"
-        "> 执行时间：%s\n\n"
-        "**✅ 签到结果**\n%s\n\n"
-        "%s\n\n"
-        "---\n"
-        "由 GitHub Actions 自动执行"
-    ) % (now, ck_line, travel_section)
-    return content
-
-
 def main():
     rt = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "")
-    webhook = os.environ.get("WECOM_WEBHOOK", "")
-    secret = os.environ.get("WECOM_SECRET", "")
 
     # 凭证脱敏：即使后续意外打印也不会泄露
     if rt:
@@ -428,8 +340,6 @@ def main():
     log_raw("refresh", r.get("code"), r)
     if r.get("code") != 0 or not isinstance(r.get("data"), dict):
         print("[refresh] 刷新失败 code=%s %s" % (r.get("code"), r.get("msg") or ""))
-        push_wecom(webhook, secret, "Buddy 加油站执行失败",
-                   "# ❌ Buddy 加油站执行失败\n> 长效令牌刷新失败，请重新导出并更新 Secret。")
         sys.exit(1)
     at = r["data"].get("accessToken") or ""
     if not at:
@@ -442,16 +352,15 @@ def main():
     # 3) 派猫猫旅行（失败不影响签到结论）
     travel = travel_pipeline(at)
 
-    # 4) 推送企业微信（签到结果与猫猫状态分开展示）
-    content = build_message(checkin, travel)
-    pushed = push_wecom(webhook, secret, "Buddy 加油站每日播报", content)
-    if not pushed:
-        print("[wecom] 推送未成功（见上方日志）；本地仍保留结果。")
-
-    # 控制台汇总
+    # 控制台汇总（结果不对外通知）
+    travel_line = build_travel_section(travel)
     print("\n==== 运行结果 ====")
-    print("签到: %s / %s" % (checkin["status"], checkin["msg"]))
-    print("猫猫: %s" % ("；".join(travel.get("lines", [])) or "跳过"))
+    if checkin["status"] == "ok":
+        print("【✅ 签到结果】状态：成功；%s；当前积分余额：%s"
+              % (checkin["msg"], checkin["balance"]))
+    else:
+        print("【✅ 签到结果】状态：失败；%s" % checkin["msg"])
+    print(travel_line)
 
     # 退出码：只要签到成功即视为整体成功（猫猫失败不影响）
     sys.exit(0 if checkin["status"] == "ok" else 1)

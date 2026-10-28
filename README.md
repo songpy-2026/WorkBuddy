@@ -3,10 +3,9 @@
 在 GitHub 仓库免费的 `schedule`/手动触发定时任务上，每天定时运行一次，于**同一次运行内**完成：
 
 1. 自动签到（Buddy 加油站）；
-2. 派猫猫旅行全自动闭环（先领取已到家的旅行积分，再判断能否派新一趟，当天已派过则跳过）；
-3. 将「签到结果」与「猫猫状态」**分开展示**推送至企业微信群机器人。
+2. 派猫猫旅行全自动闭环（先领取已到家的旅行积分，再判断能否派新一趟，当天已派过则跳过）。
 
-完全运行于 GitHub 云端 runner，**无需本地常开设备**。
+运行结果**仅打印到 Actions 日志**，不对外通知（无企业微信推送）。完全运行于 GitHub 云端 runner，**无需本地常开设备**。
 
 ---
 
@@ -17,7 +16,7 @@
 ├── .github/workflows/buddy-station.yml   # 定时任务定义（schedule + workflow_dispatch）
 ├── scripts/
 │   ├── refresh_token.py                  # 【本地】读取本机登录态，导出长效 token 供注入 Secret
-│   └── buddy_station_ci.py               # 【云端】刷新 token → 签到 → 派猫 → 推送企业微信
+│   └── buddy_station_ci.py               # 【云端】刷新 token → 签到 → 派猫闭环（结果打印到日志）
 └── README.md
 ```
 
@@ -29,8 +28,6 @@
 | ----------------------------------- | ----------------------------------------------------------------------- |
 | 本机（你已登录 WorkBuddy 的电脑）              | 运行 `scripts/refresh_token.py`，读取登录态、导出**长效 refresh token**，并调用刷新接口验证可用。 |
 | 仓库 Secret `WORKBUDDY_REFRESH_TOKEN` | 填入上面的长效 token。云端每次运行先用它换新 `accessToken`，因此只配置一次即可长期有效。                  |
-| 仓库 Secret `WECOM_WEBHOOK`           | 企业微信群机器人 webhook 地址。                                                    |
-| 仓库 Secret `WECOM_SECRET`（可选）        | 群机器人加签密钥，用于请求签名。                                                        |
 
 > 云端脚本**绝不读取任何本地登录态**，token 明文也不写入仓库或日志：
 >
@@ -63,10 +60,6 @@ WORKBUDDY_REFRESH_TOKEN=eyJhbGci....（一长串）
 GitHub 仓库 → **Settings → Secrets and variables → Actions → New repository secret**：
 
 - `WORKBUDDY_REFRESH_TOKEN` = 上面整段字符串
-- `WECOM_WEBHOOK` = 企业微信群机器人 webhook（群设置 → 群机器人 → 复制 webhook 地址）
-- `WECOM_SECRET`（可选）= 群机器人「加签」密钥
-
-> 企业微信群机器人 webhook 申请：群聊右上角 → 群机器人 → 添加 → 复制 Webhook 地址；如需签名，开启「加签」并复制密钥。
 
 ### 3. 触发运行
 
@@ -77,15 +70,15 @@ GitHub 仓库 → **Settings → Secrets and variables → Actions → New repos
 
 ## 关键实现点（对照需求）
 
-| 需求              | 实现                                                                                                                          |   |                           |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------- | - | ------------------------- |
-| 每天一次、单次内完成签到+派猫 | 一个 job 顺序执行：刷新 → 签到 → 派猫闭环 → 推送。                                                                                            |   |                           |
-| 派猫：先领后派，当天已派则跳过 | `travel_pipeline()` 严格复刻：状态 `arrived` 先 `claim`，随后 `idle` 且 `daily_limit_reached` 为假才 `depart`；`daily_limit_reached` 为真则跳过。 |   |                           |
-| 企业微信分开展示        | 消息分 `**✅ 签到结果**` 与 `**🐱 猫猫旅行**` 两个区块。                                                                                      |   |                           |
-| 猫猫失败不影响签到结论     | 旅行部分全部失败隔离；`main()` 退出码仅取决于签到：`checkin.status == "ok"` 即 `0`。                                                               |   |                           |
-| 解释器路径不硬编码版本     | workflow 用 \`command -v python3                                                                                             |   | command -v python\` 动态获取。 |
-| 接口以实际请求为准       | 全部使用实测接口（见下），不含网上旧名。                                                                                                        |   |                           |
-| token 不落地/不进日志  | Secret 注入 + `redact()` 脱敏 + `::add-mask::`。                                                                                 |   |                           |
+| 需求              | 实现                                                                                                                          |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 每天一次、单次内完成签到+派猫 | 一个 job 顺序执行：刷新 → 签到 → 派猫闭环。                                                                                            |
+| 派猫：先领后派，当天已派则跳过 | `travel_pipeline()` 严格复刻：状态 `arrived` 先 `claim`，随后 `idle` 且 `daily_limit_reached` 为假才 `depart`；`daily_limit_reached` 为真则跳过。 |
+| 猫猫失败不影响签到结论     | 旅行部分全部失败隔离；`main()` 退出码仅取决于签到：`checkin.status == "ok"` 即 `0`。                                                               |
+| 结果不对外通知        | 运行结果仅打印到 Actions 日志，不推送企业微信等任何渠道。                                                                                      |
+| 解释器路径不硬编码版本     | workflow 用 `command -v python3 \|\| command -v python` 动态获取。                                                              |
+| 接口以实际请求为准       | 全部使用实测接口（见下），不含网上旧名。                                                                                                        |
+| token 不落地/不进日志  | Secret 注入 + `redact()` 脱敏 + `::add-mask::`。                                                                                 |
 
 ---
 
@@ -109,12 +102,12 @@ GitHub 仓库 → **Settings → Secrets and variables → Actions → New repos
 
 ## 验收方式
 
-1. 按上面步骤配置三个 Secret；
+1. 按上面步骤配置 `WORKBUDDY_REFRESH_TOKEN` 这一个 Secret；
 2. 在 Actions 页面手动触发一次（`workflow_dispatch`）；
-3. 运行日志中可见每段接口的**脱敏原始返回**（`RAW[refresh]` / `RAW[checkin-status]` / `RAW[checkin-do]` / `RAW[travel-claim]` / `RAW[travel-depart]` / `RAW[wecom-push]`），token 字段均为 `***`；
-4. 企业微信群收到一条含「签到结果 / 猫猫旅行」两区块的播报即视为成功。
+3. 运行日志中可见每段接口的**脱敏原始返回**（`RAW[refresh]` / `RAW[checkin-status]` / `RAW[checkin-do]` / `RAW[travel-claim]` / `RAW[travel-depart]`），token 字段均为 `***`；
+4. 日志末尾「运行结果」区块显示签到结论与猫猫状态，且退出码为 0（签到成功即整体成功）即视为验收通过。
 
-> 说明：本方案在本机已完成语法校验与（脱敏函数、消息组装、失败隔离）本地冒烟测试；一次完整的联网成功运行需在配置好 Secret 的 GitHub 仓库中触发。
+> 说明：本方案在本机已完成语法校验与（脱敏函数、失败隔离）本地冒烟测试；一次完整的联网成功运行需在配置好 Secret 的 GitHub 仓库中触发。下方「验收记录」附有一次本机真实联网运行的脱敏日志。
 
 ---
 

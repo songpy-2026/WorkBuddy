@@ -31,11 +31,9 @@ jobs:
           echo "interpreter=$PY" >> "$GITHUB_OUTPUT"
           "$PY" --version
 
-      - name: 运行签到与派猫猫（结果推送企业微信）
+      - name: 运行签到与派猫猫
         env:
-          # 云端只读 Secret，不读取任何本地登录态
+          # 云端只读 Secret，不读取任何本地登录态；结果仅打印到日志，不对外通知
           WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
-          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
-          WECOM_SECRET: ${{ secrets.WECOM_SECRET }}
         run: |
           "${{ steps.py.outputs.interpreter }}" scripts/buddy_station_ci.py
